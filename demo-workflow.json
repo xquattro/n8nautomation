@@ -1,0 +1,96 @@
+{
+  "meta": {
+    "instanceId": "example",
+    "templatesDb": null,
+    "pointersForData": null,
+    "multipleInstances": false
+  },
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "demo"
+      },
+      "id": "e3d2f847-4d7a-4a8c-92c6-8b1c5e2f9a3d",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 1,
+      "position": [
+        250,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "url": "https://jsonplaceholder.typicode.com/posts/1",
+        "requestMethod": "GET",
+        "responseFormat": "json"
+      },
+      "id": "a1b2c3d4-e5f6-7a8b-9c0d-1e2f3a4b5c6d",
+      "name": "HTTP Request",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        450,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "https://webhook.site/unique-id",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "bodyParametersJson": "{\n  \"status\": \"success\",\n  \"data\": \"{{ $json }}\",\n  \"timestamp\": \"{{ $now }}\"\n}"
+      },
+      "id": "f7a8b9c0-d1e2-f3a4-b5c6-d7e8f9a0b1c2",
+      "name": "Send Response",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4,
+      "position": [
+        650,
+        300
+      ]
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "HTTP Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "HTTP Request": {
+      "main": [
+        [
+          {
+            "node": "Send Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "active": false,
+  "settings": {
+    "errorHandler": "n8n-nodes-base.noErrorHandler"
+  },
+  "tags": [
+    "demo",
+    "webhook",
+    "tutorial"
+  ]
+}
