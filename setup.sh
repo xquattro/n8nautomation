@@ -1,20 +1,19 @@
 #!/bin/bash
 
 ################################################################################
-# n8n Self-Hosted Setup Script for Ubuntu 26
-# This script installs Docker, Docker Compose, and sets up n8n with SSL
+# n8n Self-Hosted Setup Script for Ubuntu 26 - FIXED
+# Handles Docker Compose conflicts
 ################################################################################
 
-set -e  # Exit on error
+set -e
 
 # Colors for output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
 YELLOW='\033[1;33m'
 BLUE='\033[0;34m'
-NC='\033[0m' # No Color
+NC='\033[0m'
 
-# Logging functions
 log_info() {
     echo -e "${BLUE}[INFO]${NC} $1"
 }
@@ -38,7 +37,7 @@ if [[ $EUID -ne 0 ]]; then
 fi
 
 log_info "Starting n8n setup for Ubuntu 26..."
-log_info "This will install Docker, Docker Compose, and configure n8n"
+log_info "This will install Docker and configure n8n"
 
 # ============================================================================
 # 1. System Update
@@ -46,23 +45,38 @@ log_info "This will install Docker, Docker Compose, and configure n8n"
 log_info "Updating system packages..."
 apt-get update
 apt-get upgrade -y
-apt-get install -y curl wget git vim nano htop
+apt-get install -y curl wget git vim nano htop net-tools
 
 log_success "System packages updated"
 
 # ============================================================================
-# 2. Install Docker
+# 2. Handle Existing Docker Installation
 # ============================================================================
-log_info "Installing Docker..."
+log_info "Checking for existing Docker installations..."
+
+# Fix docker-compose conflict first
+if dpkg -l 2>/dev/null | grep -q docker-compose-v2; then
+    log_warning "docker-compose-v2 found, removing to prevent conflicts..."
+    apt-get remove -y docker-compose-v2 2>/dev/null || true
+    apt-get autoremove -y
+fi
 
 # Remove old Docker versions if any
 apt-get remove -y docker docker-engine docker.io containerd runc 2>/dev/null || true
+apt-get autoremove -y
+
+log_success "Old Docker packages cleaned"
+
+# ============================================================================
+# 3. Install Docker
+# ============================================================================
+log_info "Installing Docker..."
 
 # Install prerequisites
 apt-get install -y apt-transport-https ca-certificates curl gnupg lsb-release
 
 # Add Docker GPG key
-curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg 2>/dev/null || true
 
 # Add Docker repository
 echo \
@@ -73,31 +87,42 @@ echo \
 apt-get update
 apt-get install -y docker-ce docker-ce-cli containerd.io docker-compose-plugin
 
-log_success "Docker installed"
+log_success "Docker installed: $(docker --version)"
 
 # ============================================================================
-# 3. Install Docker Compose
+# 4. Install Docker Compose (Standalone)
 # ============================================================================
-log_info "Installing Docker Compose..."
+log_info "Installing Docker Compose standalone..."
 
 DOCKER_COMPOSE_VERSION=$(curl -s https://api.github.com/repos/docker/compose/releases/latest | grep 'tag_name' | cut -d'"' -f4)
+log_info "Downloading Docker Compose $DOCKER_COMPOSE_VERSION..."
+
 curl -L "https://github.com/docker/compose/releases/download/${DOCKER_COMPOSE_VERSION}/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
 chmod +x /usr/local/bin/docker-compose
+
+# Also symlink if needed
+ln -sf /usr/local/bin/docker-compose /usr/bin/docker-compose 2>/dev/null || true
 
 log_success "Docker Compose installed: $(docker-compose --version)"
 
 # ============================================================================
-# 4. Start Docker service
+# 5. Start Docker service
 # ============================================================================
 log_info "Starting Docker service..."
 systemctl enable docker
 systemctl start docker
 systemctl enable containerd
 
-log_success "Docker service started"
+# Verify Docker is running
+if systemctl is-active --quiet docker; then
+    log_success "Docker service running"
+else
+    log_error "Docker service failed to start"
+    exit 1
+fi
 
 # ============================================================================
-# 5. Create n8n directory structure
+# 6. Create n8n directory structure
 # ============================================================================
 log_info "Creating n8n stack directory..."
 
@@ -108,7 +133,7 @@ mkdir -p "$N8N_DIR/data"
 log_success "n8n directory created at: $N8N_DIR"
 
 # ============================================================================
-# 6. SSL Certificate Setup (Self-signed for testing)
+# 7. SSL Certificate Setup (Self-signed for testing)
 # ============================================================================
 log_info "Setting up SSL certificates..."
 
@@ -158,7 +183,7 @@ case $ssl_option in
 esac
 
 # ============================================================================
-# 7. Create environment file
+# 8. Create environment file
 # ============================================================================
 log_info "Creating environment configuration..."
 
@@ -192,27 +217,31 @@ EOF
 log_success "Environment file created at: $N8N_DIR/.env"
 
 # ============================================================================
-# 8. Copy configuration files
+# 9. Copy configuration files from repo
 # ============================================================================
 log_info "Copying configuration files..."
 
-# Check if files exist in current directory
-if [ -f "./docker-compose.yml" ]; then
-    cp docker-compose.yml "$N8N_DIR/"
-    cp nginx.conf "$N8N_DIR/" 2>/dev/null || log_warning "nginx.conf not found, will be created"
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+
+if [ -f "$SCRIPT_DIR/docker-compose.yml" ]; then
+    cp "$SCRIPT_DIR/docker-compose.yml" "$N8N_DIR/"
+    log_success "docker-compose.yml copied"
 else
-    log_warning "Configuration files not found in current directory"
-    log_info "Make sure docker-compose.yml and nginx.conf are in the setup directory"
+    log_warning "docker-compose.yml not found in $SCRIPT_DIR, will use default"
 fi
 
-log_success "Configuration files ready"
+if [ -f "$SCRIPT_DIR/nginx.conf" ]; then
+    cp "$SCRIPT_DIR/nginx.conf" "$N8N_DIR/"
+    log_success "nginx.conf copied"
+else
+    log_warning "nginx.conf not found in $SCRIPT_DIR, will use default"
+fi
 
 # ============================================================================
-# 9. User Group Configuration
+# 10. User Group Configuration
 # ============================================================================
 log_info "Configuring user groups..."
 
-# Add current user to docker group
 if [ -n "$SUDO_USER" ]; then
     usermod -aG docker "$SUDO_USER"
     log_success "Added $SUDO_USER to docker group"
@@ -220,7 +249,7 @@ if [ -n "$SUDO_USER" ]; then
 fi
 
 # ============================================================================
-# 10. Display Summary
+# 11. Display Summary
 # ============================================================================
 clear
 
@@ -233,8 +262,8 @@ EOF
 
 echo -e "${GREEN}Installation Summary:${NC}"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo -e "✓ Docker installed"
-echo -e "✓ Docker Compose installed"
+echo -e "✓ Docker installed: $(docker --version)"
+echo -e "✓ Docker Compose installed: $(docker-compose --version)"
 echo -e "✓ n8n directory created: $N8N_DIR"
 echo -e "✓ SSL configured"
 echo -e "✓ Environment configured"
