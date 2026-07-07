@@ -1,8 +1,8 @@
 #!/bin/bash
 
 ################################################################################
-# n8n Reconfigure for Public IP
-# Updates SSL certificate and configuration for public IP access
+# n8n Reconfigure for Public IP (Auto-detect or Manual)
+# Automatically detects public IP or accepts manual input
 ################################################################################
 
 set -e
@@ -24,26 +24,60 @@ if [[ $EUID -ne 0 ]]; then
 fi
 
 N8N_DIR="/root/n8n-stack"
-PUBLIC_IP="${1:-}"
+
+# ============================================================================
+# 1. Detect or Get Public IP
+# ============================================================================
+echo ""
+echo -e "${BLUE}════════════════════════════════════════════════════════════════${NC}"
+echo -e "${BLUE}  n8n Reconfiguration - Public IP Setup${NC}"
+echo -e "${BLUE}════════════════════════════════════════════════════════════════${NC}"
+echo ""
+
+log_info "Detecting public IP..."
+
+# Try to detect public IP automatically
+DETECTED_IP=$(curl -s --connect-timeout 5 https://api.ipify.org 2>/dev/null || echo "")
+
+if [ -n "$DETECTED_IP" ]; then
+    log_success "Public IP detected: $DETECTED_IP"
+    echo ""
+    read -p "Use this IP? (y/n) [default: y]: " use_detected
+    use_detected=${use_detected:-y}
+    
+    if [[ "$use_detected" =~ ^[Yy]$ ]]; then
+        PUBLIC_IP="$DETECTED_IP"
+    else
+        read -p "Enter your public IP address: " PUBLIC_IP
+    fi
+else
+    log_warning "Could not auto-detect public IP (no internet or blocked)"
+    read -p "Enter your public IP address manually: " PUBLIC_IP
+fi
 
 if [ -z "$PUBLIC_IP" ]; then
-    log_error "Please provide Public IP as argument"
-    echo "Usage: sudo bash reconfigure.sh <PUBLIC_IP>"
-    echo "Example: sudo bash reconfigure.sh 204.168.255.122"
+    log_error "No IP address provided!"
     exit 1
 fi
 
-log_info "Reconfiguring n8n for Public IP: $PUBLIC_IP"
+# Validate IP format
+if ! [[ "$PUBLIC_IP" =~ ^[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}$ ]]; then
+    log_error "Invalid IP address format: $PUBLIC_IP"
+    exit 1
+fi
+
+log_success "Using IP: $PUBLIC_IP"
+echo ""
 
 # ============================================================================
-# 1. Stop services
+# 2. Stop services
 # ============================================================================
 log_info "Stopping services..."
 cd "$N8N_DIR"
-docker-compose down
+docker-compose down 2>/dev/null || true
 
 # ============================================================================
-# 2. Generate new SSL certificate for Public IP
+# 3. Generate new SSL certificate for Public IP
 # ============================================================================
 log_info "Generating SSL certificate for $PUBLIC_IP..."
 
@@ -60,13 +94,18 @@ chmod 600 "$N8N_DIR/ssl/key.pem"
 log_success "SSL certificate generated for $PUBLIC_IP"
 
 # ============================================================================
-# 3. Update .env file
+# 4. Update .env file
 # ============================================================================
 log_info "Updating .env configuration..."
 
-# Read current values
-DB_PASSWORD=$(grep "^DB_PASSWORD=" "$N8N_DIR/.env" | cut -d'=' -f2)
-TIMEZONE=$(grep "^TIMEZONE=" "$N8N_DIR/.env" | cut -d'=' -f2)
+# Read current values or set defaults
+if [ -f "$N8N_DIR/.env" ]; then
+    DB_PASSWORD=$(grep "^DB_PASSWORD=" "$N8N_DIR/.env" | cut -d'=' -f2 || echo "securepassword123")
+    TIMEZONE=$(grep "^TIMEZONE=" "$N8N_DIR/.env" | cut -d'=' -f2 || echo "Europe/Istanbul")
+else
+    DB_PASSWORD="securepassword123"
+    TIMEZONE="Europe/Istanbul"
+fi
 
 cat > "$N8N_DIR/.env" << EOF
 # Database Configuration
@@ -89,14 +128,13 @@ N8N_BASIC_AUTH_ACTIVE=false
 NODE_ENV=production
 EOF
 
-log_success ".env updated with Public IP"
+log_success ".env updated with Public IP: $PUBLIC_IP"
 
 # ============================================================================
-# 4. Update docker-compose.yml
+# 5. Update docker-compose.yml
 # ============================================================================
-log_info "Updating docker-compose.yml..."
+log_info "Ensuring docker-compose.yml exists..."
 
-# Check if docker-compose.yml exists, if not create it
 if [ ! -f "$N8N_DIR/docker-compose.yml" ]; then
     log_warning "docker-compose.yml not found, creating default..."
     cat > "$N8N_DIR/docker-compose.yml" << 'COMPOSE_EOF'
@@ -180,12 +218,13 @@ networks:
   n8n-network:
     driver: bridge
 COMPOSE_EOF
+    log_success "docker-compose.yml created"
+else
+    log_success "docker-compose.yml already exists"
 fi
 
-log_success "docker-compose.yml configured"
-
 # ============================================================================
-# 5. Update nginx.conf
+# 6. Update nginx.conf
 # ============================================================================
 log_info "Updating nginx.conf for $PUBLIC_IP..."
 
@@ -279,15 +318,19 @@ NGINX_EOF
 log_success "nginx.conf updated"
 
 # ============================================================================
-# 6. Start services again
+# 7. Start services again
 # ============================================================================
 log_info "Starting services with new configuration..."
 docker-compose up -d
 
+# Wait for services to start
+log_info "Waiting for services to start..."
+sleep 5
+
 log_success "Services started!"
 
 # ============================================================================
-# 7. Display Summary
+# 8. Display Summary
 # ============================================================================
 clear
 
@@ -300,7 +343,8 @@ EOF
 
 echo -e "${GREEN}Reconfiguration Summary:${NC}"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
-echo -e "✓ SSL certificate updated for: $PUBLIC_IP"
+echo -e "✓ Public IP: $PUBLIC_IP"
+echo -e "✓ SSL certificate updated"
 echo -e "✓ .env configuration updated"
 echo -e "✓ docker-compose.yml configured"
 echo -e "✓ nginx.conf updated"
@@ -312,22 +356,21 @@ echo "━━━━━━━━━━━━━━━━━━━━━━━━�
 echo ""
 echo "URL: https://$PUBLIC_IP"
 echo ""
-echo -e "${YELLOW}Note:${NC} Self-signed certificate will show browser warning"
-echo "      This is normal. Click 'Advanced' → 'Proceed'"
+echo -e "${YELLOW}Browser Warning:${NC}"
+echo "      Self-signed certificate will show warning"
+echo "      Click 'Advanced' → 'Proceed to IP' to access"
 echo ""
 
 echo -e "${BLUE}Next Steps:${NC}"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
 echo "1. Check service status:"
-echo "   docker-compose ps"
+echo "   cd $N8N_DIR && docker-compose ps"
 echo ""
 echo "2. View logs:"
 echo "   docker-compose logs -f n8n"
 echo ""
-echo "3. Wait 30-60 seconds for services to fully start"
-echo ""
-echo "4. Open browser and go to:"
+echo "3. Open browser:"
 echo "   https://$PUBLIC_IP"
 echo ""
 
